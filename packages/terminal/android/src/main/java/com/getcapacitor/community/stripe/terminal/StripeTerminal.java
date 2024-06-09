@@ -26,6 +26,7 @@ import com.stripe.stripeterminal.external.callable.ReaderCallback;
 import com.stripe.stripeterminal.external.callable.ReaderListener;
 import com.stripe.stripeterminal.external.callable.ReaderReconnectionListener;
 import com.stripe.stripeterminal.external.callable.TerminalListener;
+import com.stripe.stripeterminal.external.models.BatteryStatus;
 import com.stripe.stripeterminal.external.models.CardPresentDetails;
 import com.stripe.stripeterminal.external.models.CollectConfiguration;
 import com.stripe.stripeterminal.external.models.ConnectionConfiguration.BluetoothConnectionConfiguration;
@@ -39,6 +40,10 @@ import com.stripe.stripeterminal.external.models.PaymentMethod;
 import com.stripe.stripeterminal.external.models.PaymentStatus;
 import com.stripe.stripeterminal.external.models.Reader;
 import com.stripe.stripeterminal.external.models.ReaderSoftwareUpdate;
+import com.stripe.stripeterminal.external.models.SimulateReaderUpdate;
+import com.stripe.stripeterminal.external.models.SimulatedCard;
+import com.stripe.stripeterminal.external.models.SimulatedCardType;
+import com.stripe.stripeterminal.external.models.SimulatorConfiguration;
 import com.stripe.stripeterminal.external.models.TerminalException;
 import com.stripe.stripeterminal.log.LogLevel;
 import java.util.ArrayList;
@@ -119,6 +124,20 @@ public class StripeTerminal extends Executor {
 
     public void setConnectionToken(PluginCall call) {
         this.tokenProvider.setConnectionToken(call);
+    }
+
+    public void setSimulatorConfiguration(PluginCall call) {
+        try {
+            Terminal.getInstance().setSimulatorConfiguration(new SimulatorConfiguration(
+                SimulateReaderUpdate.valueOf(call.getString("update", "UPDATE_AVAILABLE")),
+                new SimulatedCard(SimulatedCardType.valueOf(call.getString("simulatedCard", "VISA"))),
+                call.getLong("simulatedTipAmount", null)
+            ));
+
+            call.resolve();
+        } catch (Exception ex) {
+            call.reject(ex.getMessage());
+        }
     }
 
     public void onDiscoverReaders(final PluginCall call) {
@@ -443,16 +462,41 @@ public class StripeTerminal extends Executor {
             @Override
             public void onStartInstallingUpdate(@NotNull ReaderSoftwareUpdate update, @NotNull Cancelable cancelable) {
                 // Show UI communicating that a required update has started installing
+                notifyListeners(TerminalEnumEvent.StartInstallingUpdate.getWebEventName(), new JSObject().put("update", convertReaderSoftwareUpdate(update)));
             }
 
             @Override
             public void onReportReaderSoftwareUpdateProgress(float progress) {
                 // Update the progress of the install
+                notifyListeners(TerminalEnumEvent.ReaderSoftwareUpdateProgress.getWebEventName(), new JSObject().put("progress", progress));
             }
 
             @Override
             public void onFinishInstallingUpdate(@Nullable ReaderSoftwareUpdate update, @Nullable TerminalException e) {
                 // Report success or failure of the update
+                JSObject eventObject = new JSObject();
+                eventObject.put("update", update == null ? null : convertReaderSoftwareUpdate(update));
+
+                String errorCode = null;
+                String errorMessage = null;
+                if (e != null) {
+                    errorCode = e.getErrorCode().toString();
+                    errorMessage = e.getErrorMessage();
+                }
+
+                eventObject.put("errorCode", errorCode)
+                        .put("errorMessage", errorMessage);
+
+                notifyListeners(TerminalEnumEvent.FinishInstallingUpdate.getWebEventName(), eventObject);
+            }
+
+            @Override
+            public void onBatteryLevelUpdate(float batteryLevel, @NonNull BatteryStatus batteryStatus, boolean isCharging) {
+                notifyListeners(TerminalEnumEvent.BatteryLevel.getWebEventName(), new JSObject()
+                    .put("level", batteryLevel)
+                    .put("charging", isCharging)
+                    .put("status", batteryStatus.toString()
+                ));
             }
 
             @Override
@@ -464,5 +508,13 @@ public class StripeTerminal extends Executor {
                 // This update can be installed using `Terminal.getInstance().installAvailableUpdate`.
             }
         };
+    }
+
+    private JSObject convertReaderSoftwareUpdate(ReaderSoftwareUpdate update) {
+        return new JSObject()
+                .put("version", update.getVersion())
+                .put("settingsVersion", update.getSettingsVersion())
+                .put("requiredAt", update.getRequiredAt().getTime())
+                .put("timeEstimate", update.getTimeEstimate().toString());
     }
 }
